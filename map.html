@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CTG Shield - Chittagong Safety & Risk Heatmap</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet Map CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        #map { height: calc(100vh - 80px); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased">
+
+    <!-- Top Navigation Bar -->
+    <nav class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex justify-between items-center h-20">
+        <div class="flex items-center gap-3">
+            <i class="fas fa-shield-halved text-red-500 text-2xl"></i>
+            <div>
+                <h1 class="text-xl font-extrabold text-white tracking-wide">CTG SHIELD <span class="text-red-500 text-sm font-semibold">| Chittagong Risk Map</span></h1>
+                <p class="text-xs text-slate-400">PostGIS Spatial Danger Zones & Crowdsourced Crime Intelligence</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <a href="/simulator" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold px-4 py-2 rounded-lg transition flex items-center gap-2">
+                <i class="fas fa-satellite-dish text-cyan-400"></i> Open SOS Simulator
+            </a>
+            <button onclick="getUserLiveLocation()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-lg transition flex items-center gap-2">
+                <i class="fas fa-crosshairs"></i> Check My Location
+            </button>
+        </div>
+    </nav>
+
+    <!-- Main Container: Sidebar + Interactive Map -->
+    <div class="flex flex-col lg:flex-row">
+        
+        <!-- Interactive Leaflet Map -->
+        <div class="flex-1 relative">
+            <div id="map" class="z-10"></div>
+        </div>
+
+        <!-- Right Side Control & Reporting Panel -->
+        <div class="w-full lg:w-96 bg-slate-900 border-l border-slate-800 p-6 space-y-6 overflow-y-auto max-h-[calc(100vh-80px)]">
+            
+            <!-- Location Evaluation Card -->
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Spatial Risk Status</span>
+                <div id="risk-badge" class="text-lg font-bold text-emerald-400 flex items-center gap-2">
+                    <i class="fas fa-circle-check"></i> Safe / Low Risk
+                </div>
+                <p id="risk-details" class="text-xs text-slate-400 font-mono">
+                    Click anywhere on the map to evaluate risk rating for that point.
+                </p>
+            </div>
+
+            <!-- Report Incident Form -->
+            <div class="bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4">
+                <h3 class="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <i class="fas fa-bullhorn text-amber-400"></i> Report Local Incident
+                </h3>
+                
+                <div class="space-y-3 text-xs">
+                    <div>
+                        <label class="text-slate-400 block mb-1">Incident Type</label>
+                        <select id="report-type" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200">
+                            <option value="MUGGING">Mugging / Snatching</option>
+                            <option value="ROBBERY">Armed Robbery</option>
+                            <option value="HARASSMENT">Harassment</option>
+                            <option value="ASSAULT">Assault / Physical Attack</option>
+                            <option value="HAZARD">Unsafe Dark Corridor / Hazard</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="text-slate-400 block mb-1">Description</label>
+                        <textarea id="report-desc" rows="2" placeholder="e.g. 2 men on a motorbike targeting pedestrians..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200"></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 font-mono">
+                        <div>
+                            <label class="text-slate-400 block mb-1">Latitude</label>
+                            <input id="report-lat" type="text" readonly class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-slate-400" value="22.3600">
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Longitude</label>
+                            <input id="report-lon" type="text" readonly class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-slate-400" value="91.8220">
+                        </div>
+                    </div>
+
+                    <button onclick="submitIncidentReport()" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 rounded-lg transition shadow-lg shadow-amber-600/20">
+                        Pin & Submit Report
+                    </button>
+                    <div id="report-status" class="text-xs font-mono text-emerald-400"></div>
+                </div>
+            </div>
+
+            <!-- Known High-Risk Corridor Legend -->
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+                <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Monitored Zones</span>
+                <div class="space-y-2 text-xs">
+                    <div class="flex items-center justify-between p-2 bg-slate-900 rounded-lg border-l-4 border-amber-500">
+                        <div>
+                            <div class="font-semibold text-white">GEC Circle</div>
+                            <div class="text-slate-400 text-[10px]">Peak: 04:00 AM - 07:00 AM (Mugging)</div>
+                        </div>
+                        <span class="text-amber-400 font-bold">HIGH</span>
+                    </div>
+                    <div class="flex items-center justify-between p-2 bg-slate-900 rounded-lg border-l-4 border-red-600">
+                        <div>
+                            <div class="font-semibold text-white">Outer Ring Road (Patenga)</div>
+                            <div class="text-slate-400 text-[10px]">Peak: 11:00 PM - 04:00 AM (Robbery)</div>
+                        </div>
+                        <span class="text-red-500 font-bold">CRITICAL</span>
+                    </div>
+                    <div class="flex items-center justify-between p-2 bg-slate-900 rounded-lg border-l-4 border-amber-500">
+                        <div>
+                            <div class="font-semibold text-white">Oxygen-Hathazari Link</div>
+                            <div class="text-slate-400 text-[10px]">Peak: 10:00 PM - 03:00 AM (Mugging)</div>
+                        </div>
+                        <span class="text-amber-400 font-bold">HIGH</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // Center on Chittagong, Bangladesh
+        const map = L.map('map').setView([22.3569, 91.7832], 12);
+
+        // OpenStreetMap Dark Theme Tiles
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap & CARTO'
+        }).addTo(map);
+
+        let clickMarker = null;
+
+        // Render Chittagong Defined High Risk Polygons
+        const riskPolygons = [
+            {
+                name: "GEC Circle Early-Morning Snatching Zone",
+                level: "HIGH",
+                hours: "04:00 AM - 07:00 AM",
+                crime: "MUGGING",
+                coords: [[22.3580, 91.8200], [22.3580, 91.8250], [22.3640, 91.8250], [22.3640, 91.8200]],
+                color: "#f59e0b"
+            },
+            {
+                name: "Outer Ring Road - Patenga Coastal Corridor",
+                level: "CRITICAL",
+                hours: "11:00 PM - 04:00 AM",
+                crime: "ROBBERY",
+                coords: [[22.2300, 91.7800], [22.2300, 91.8100], [22.2600, 91.8100], [22.2600, 91.7800]],
+                color: "#dc2626"
+            },
+            {
+                name: "Oxygen - Hathazari Connecting Link",
+                level: "HIGH",
+                hours: "10:00 PM - 03:00 AM",
+                crime: "MUGGING",
+                coords: [[22.3900, 91.8150], [22.3900, 91.8300], [22.4150, 91.8300], [22.4150, 91.8150]],
+                color: "#f59e0b"
+            }
+        ];
+
+        riskPolygons.forEach(zone => {
+            const polygon = L.polygon(zone.coords, {
+                color: zone.color,
+                fillColor: zone.color,
+                fillOpacity: 0.35,
+                weight: 2
+            }).addTo(map);
+
+            polygon.bindPopup(`
+                <div style="font-family: sans-serif;">
+                    <b style="color: ${zone.color}; font-size: 14px;">${zone.name}</b><br/>
+                    <b>Risk Rating:</b> ${zone.level}<br/>
+                    <b>Dominant Hazard:</b> ${zone.crime}<br/>
+                    <b>Peak Danger Window:</b> ${zone.hours}
+                </div>
+            `);
+        });
+
+        // Click anywhere on map to check risk level and fill incident coordinates
+        map.on('click', async function(e) {
+            const lat = e.latlng.lat.toFixed(5);
+            const lon = e.latlng.lng.toFixed(5);
+
+            document.getElementById('report-lat').value = lat;
+            document.getElementById('report-lon').value = lon;
+
+            if (clickMarker) map.removeLayer(clickMarker);
+            clickMarker = L.marker([lat, lon]).addTo(map);
+
+            // Query backend for spatial danger analysis
+            try {
+                const res = await fetch(`/api/v1/safety/evaluate-location?lon=${lon}&lat=${lat}`);
+                const data = await res.json();
+                
+                const badge = document.getElementById('risk-badge');
+                const details = document.getElementById('risk-details');
+
+                if (data.is_in_active_risk_zone) {
+                    badge.innerHTML = `<span class="text-red-500 flex items-center gap-2"><i class="fas fa-triangle-exclamation animate-bounce"></i> ${data.risk_level_tag} RISK ZONE</span>`;
+                    details.innerHTML = `⚠️ Inside ${data.active_zone_details.zone_name}<br/>Thana: ${data.active_zone_details.thana}<br/>Composite Danger Score: ${data.danger_score}/100`;
+                } else {
+                    badge.innerHTML = `<span class="text-emerald-400 flex items-center gap-2"><i class="fas fa-circle-check"></i> LOW / SAFE AREA</span>`;
+                    details.innerHTML = `No active spatial polygons at this coordinate.<br/>Score: ${data.danger_score}/100 | Verified Incidents: ${data.nearby_incidents_count_30d}`;
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        async function submitIncidentReport() {
+            const type = document.getElementById('report-type').value;
+            const desc = document.getElementById('report-desc').value;
+            const lat = parseFloat(document.getElementById('report-lat').value);
+            const lon = parseFloat(document.getElementById('report-lon').value);
+            const status = document.getElementById('report-status');
+
+            if (!desc) {
+                alert("Please enter a short description");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/v1/incidents/report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        incident_type: type,
+                        description: desc,
+                        longitude: lon,
+                        latitude: lat
+                    })
+                });
+
+                const result = await res.json();
+                status.innerText = `✅ Incident pinned to database! ID: ${result.incident_id.slice(0, 8)}...`;
+                
+                // Add marker to map
+                L.circleMarker([lat, lon], {
+                    radius: 8,
+                    color: '#ef4444',
+                    fillColor: '#ef4444',
+                    fillOpacity: 0.8
+                }).addTo(map).bindPopup(`<b>${type}</b><br/>${desc}`).openPopup();
+
+                document.getElementById('report-desc').value = '';
+            } catch (err) {
+                status.innerText = `❌ Error: ${err.message}`;
+            }
+        }
+
+        function getUserLiveLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(pos => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    map.setView([lat, lon], 15);
+                    L.marker([lat, lon]).addTo(map).bindPopup("<b>Your Current Location</b>").openPopup();
+                });
+            } else {
+                alert("Geolocation is not supported by your browser.");
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CTG Shield - Real-Time Proximity SOS Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-950 text-slate-100 p-8 font-sans">
+    <div class="max-w-5xl mx-auto space-y-6">
+        <header class="border-b border-slate-800 pb-4 flex justify-between items-center">
+            <div>
+                <h1 class="text-3xl font-extrabold text-red-500 flex items-center gap-3">
+                    <i class="fas fa-shield-alt"></i> CTG Shield — Live Proximity SOS Dispatcher
+                </h1>
+                <p class="text-slate-400 text-sm mt-1">Multi-Client WebSocket & Geo-Radius Alarm Network for Chittagong</p>
+            </div>
+            <span class="px-3 py-1 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-full font-mono">
+                Engine Status: LIVE
+            </span>
+        </header>
+
+        <!-- Simulated Active Users Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- User 1: Responder at GEC (Close to danger) -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3 relative overflow-hidden" id="card-responder-1">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-white flex items-center gap-2">
+                        <i class="fas fa-user text-cyan-400"></i> Responder #1 (Tanvir)
+                    </span>
+                    <span class="text-xs text-slate-400 font-mono">Location: GEC Circle (~400m away)</span>
+                </div>
+                <button onclick="connectUser('responder_tanvir', 91.8240, 22.3610, 'card-responder-1', 'feed-responder-1')" class="w-full bg-cyan-600 hover:bg-cyan-500 py-2 rounded-xl text-sm font-semibold transition">
+                    1. Connect WebSocket (Send GEC GPS)
+                </button>
+                <div id="feed-responder-1" class="h-32 bg-slate-950 rounded-xl p-3 text-xs font-mono text-slate-400 overflow-y-auto border border-slate-800/80">
+                    Waiting for WebSocket connection...
+                </div>
+            </div>
+
+            <!-- User 2: Responder at Agrabad (Far away - Outside 2.5km radius) -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3 relative overflow-hidden" id="card-responder-2">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-white flex items-center gap-2">
+                        <i class="fas fa-user text-slate-400"></i> Responder #2 (Rahim)
+                    </span>
+                    <span class="text-xs text-slate-400 font-mono">Location: Agrabad (~5.8km away)</span>
+                </div>
+                <button onclick="connectUser('responder_rahim', 91.8120, 22.3250, 'card-responder-2', 'feed-responder-2')" class="w-full bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-sm font-semibold transition">
+                    1. Connect WebSocket (Send Agrabad GPS)
+                </button>
+                <div id="feed-responder-2" class="h-32 bg-slate-950 rounded-xl p-3 text-xs font-mono text-slate-400 overflow-y-auto border border-slate-800/80">
+                    Waiting for WebSocket connection...
+                </div>
+            </div>
+        </div>
+
+        <!-- Victim Panic Trigger Console -->
+        <div class="bg-slate-900 border border-red-500/40 rounded-2xl p-6 space-y-4 shadow-xl shadow-red-500/5">
+            <h3 class="text-xl font-bold text-red-400 flex items-center gap-2">
+                <i class="fas fa-exclamation-triangle"></i> Emergency Panic Console (Victim: Irtaz Irfan)
+            </h3>
+            <p class="text-slate-400 text-sm">
+                Location: <strong>GEC Circle, Chittagong (Lon: 91.8220, Lat: 22.3600)</strong> | Radius: <strong>2,500 Meters</strong>
+            </p>
+            <button onclick="triggerSOS()" class="w-full bg-red-600 hover:bg-red-700 active:scale-95 text-white font-extrabold py-4 rounded-xl text-lg transition flex items-center justify-center gap-3 shadow-lg shadow-red-600/30">
+                <i class="fas fa-bell animate-bounce text-2xl"></i> TRIGGER INSTANT PROXIMITY SOS
+            </button>
+            <div id="sos-response-log" class="p-3 bg-slate-950 rounded-xl text-xs font-mono text-slate-300 border border-slate-800">
+                Status: Ready to trigger panic alarm.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const sockets = {};
+
+        function connectUser(userId, lon, lat, cardId, feedId) {
+            const feed = document.getElementById(feedId);
+            const ws = new WebSocket(`ws://127.0.0.1:8000/ws/safety-stream/${userId}`);
+
+            ws.onopen = () => {
+                feed.innerHTML = `🟢 WebSocket Connected. Streaming GPS: (${lon}, ${lat})\n`;
+                ws.send(JSON.stringify({ lon: lon, lat: lat }));
+                sockets[userId] = ws;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.event === "CRITICAL_PROXIMITY_ALARM") {
+                    const card = document.getElementById(cardId);
+                    card.classList.remove('border-slate-800');
+                    card.classList.add('border-red-500', 'bg-red-950/40', 'animate-pulse');
+                    
+                    feed.innerHTML += `\n🚨 CRITICAL PROXIMITY ALARM RECEIVED!\n` +
+                        `• Victim: ${data.victim.name} (${data.victim.phone})\n` +
+                        `• Emergency: ${data.emergency_type}\n` +
+                        `• Distance from You: ${data.distance_from_victim_meters} meters\n` +
+                        `• Coordinates: ${data.location.latitude}, ${data.location.longitude}\n`;
+                }
+            };
+        }
+
+        async function triggerSOS() {
+            const log = document.getElementById('sos-response-log');
+            log.innerHTML = "📡 Broadcasting SOS to active proximity responders...";
+
+            const payload = {
+                user_id: "user_irtaz_01",
+                user_name: "Irtaz Irfan",
+                user_phone: "+8801735419295",
+                longitude: 91.8220,
+                latitude: 22.3600,
+                emergency_type: "PHYSICAL_ATTACK",
+                broadcast_radius_meters: 2500
+            };
+
+            try {
+                const res = await fetch('/api/v1/sos/trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await res.json();
+                log.innerHTML = `✅ Server Broadcast Acknowledged: Alerted ${result.total_responders_alerted} nearby responder(s).\n` + JSON.stringify(result, null, 2);
+            } catch (err) {
+                log.innerHTML = `❌ Error triggering SOS: ${err.message}`;
+            }
+        }
+    </script>
+</body>
+</html>
