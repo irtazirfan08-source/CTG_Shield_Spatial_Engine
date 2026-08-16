@@ -190,13 +190,14 @@ if __name__ == "__main__":
 
 @app.get("/init-db")
 async def initialize_database():
-    """Create required spatial tables and populate initial Chittagong risk zones."""
+    """Create required spatial tables, add thana column, and populate Chittagong risk zones."""
     create_table_sql = """
     CREATE EXTENSION IF NOT EXISTS postgis;
     
     CREATE TABLE IF NOT EXISTS ctg_risk_zones (
         id SERIAL PRIMARY KEY,
         zone_name VARCHAR(100) NOT NULL,
+        thana VARCHAR(100) DEFAULT 'General',
         risk_level VARCHAR(20) NOT NULL,
         base_risk_score FLOAT DEFAULT 0.5,
         location GEOMETRY(Point, 4326),
@@ -204,6 +205,9 @@ async def initialize_database():
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Add the thana column if the table already existed without it
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
 
     CREATE TABLE IF NOT EXISTS incidents (
         id SERIAL PRIMARY KEY,
@@ -217,26 +221,33 @@ async def initialize_database():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'GEC Circle', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
+    -- Assign correct Chittagong police jurisdictions (Thana)
+    UPDATE ctg_risk_zones SET thana = 'Khulshi' WHERE zone_name = 'GEC Circle';
+    UPDATE ctg_risk_zones SET thana = 'Double Mooring' WHERE zone_name = 'Agrabad Commercial Area';
+    UPDATE ctg_risk_zones SET thana = 'Panchlaish' WHERE zone_name = '2 No Gate';
+    UPDATE ctg_risk_zones SET thana = 'Chawkbazar' WHERE zone_name = 'Chawkbazar';
+
+    -- Insert records if table is completely empty
+    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'GEC Circle', 'Khulshi', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
     WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
 
-    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'Agrabad Commercial Area', 'MEDIUM', 0.55, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, pickpocket risk during peak hours'
+    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'MEDIUM', 0.55, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, pickpocket risk during peak hours'
     WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
 
-    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT '2 No Gate', 'HIGH', 0.78, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
+    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT '2 No Gate', 'Panchlaish', 'HIGH', 0.78, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
     WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
 
-    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'Chawkbazar', 'MEDIUM', 0.60, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and market gathering point'
+    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Chawkbazar', 'Chawkbazar', 'MEDIUM', 0.60, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and market gathering point'
     WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
     """
     
     if hasattr(db_service, 'pool') and db_service.pool:
         async with db_service.pool.acquire() as conn:
             await conn.execute(create_table_sql)
-        return {"status": "success", "message": "Database tables and spatial risk zones created successfully!"}
+        return {"status": "success", "message": "Database schema updated with thana column successfully!"}
     else:
         return {"status": "error", "message": "Database connection pool not ready"}
