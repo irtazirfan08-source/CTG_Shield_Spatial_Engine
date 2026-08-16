@@ -1,13 +1,13 @@
 """
 CTG Shield - FastAPI Gateway with PostGIS Spatial Engine, Heatmap & Proximity SOS
 """
-from fastapi.middleware.cors import CORSMiddleware
 import sys
 import os
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 import uvicorn
@@ -47,6 +47,8 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+# Enable CORS for Flutter Web integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -85,6 +87,95 @@ def root():
         "spatial_db": "PostgreSQL 16 + PostGIS",
         "realtime_engine": "Proximity WebSocket Dispatcher"
     }
+
+
+@app.get("/init-db")
+async def initialize_database():
+    """Create and migrate required spatial tables with all expected columns."""
+    create_table_sql = """
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    
+    CREATE TABLE IF NOT EXISTS ctg_risk_zones (
+        id SERIAL PRIMARY KEY,
+        zone_name VARCHAR(100) NOT NULL,
+        thana VARCHAR(100) DEFAULT 'General',
+        dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert',
+        risk_level VARCHAR(20) NOT NULL,
+        base_risk_score FLOAT DEFAULT 0.5,
+        location GEOMETRY(Point, 4326),
+        radius_meters FLOAT DEFAULT 500.0,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Ensure all required columns exist in ctg_risk_zones
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert';
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS base_risk_score FLOAT DEFAULT 0.5;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS radius_meters FLOAT DEFAULT 500.0;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS description TEXT;
+
+    CREATE TABLE IF NOT EXISTS incidents (
+        id SERIAL PRIMARY KEY,
+        incident_type VARCHAR(50) NOT NULL,
+        description TEXT,
+        severity VARCHAR(20) DEFAULT 'medium',
+        location GEOMETRY(Point, 4326),
+        latitude FLOAT,
+        longitude FLOAT,
+        reporter_id VARCHAR(100),
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Ensure reporter_id column exists in incidents
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS reporter_id VARCHAR(100);
+
+    -- Update existing records with crime types and thana details
+    UPDATE ctg_risk_zones SET 
+        thana = 'Khulshi', 
+        dominant_crime_type = 'Mugging & Snatching' 
+    WHERE zone_name = 'GEC Circle';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Double Mooring', 
+        dominant_crime_type = 'Pickpocketing & Theft' 
+    WHERE zone_name = 'Agrabad Commercial Area';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Panchlaish', 
+        dominant_crime_type = 'Evening Snatching & Harassment' 
+    WHERE zone_name = '2 No Gate';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Chawkbazar', 
+        dominant_crime_type = 'Overcrowding & Harassment' 
+    WHERE zone_name = 'Chawkbazar';
+
+    -- Insert seed spatial hotspots if table is empty
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'GEC Circle', 'Khulshi', 'Mugging & Snatching', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'Pickpocketing & Theft', 'MEDIUM', 0.55, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, peak-hour theft risk'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT '2 No Gate', 'Panchlaish', 'Evening Snatching & Harassment', 'HIGH', 0.78, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Chawkbazar', 'Chawkbazar', 'Overcrowding & Harassment', 'MEDIUM', 0.60, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and commercial market area'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
+    """
+    
+    if hasattr(db_service, 'pool') and db_service.pool:
+        async with db_service.pool.acquire() as conn:
+            await conn.execute(create_table_sql)
+        return {"status": "success", "message": "Database schema updated with all columns successfully!"}
+    else:
+        return {"status": "error", "message": "Database connection pool not ready"}
 
 
 @app.get("/api/v1/safety/evaluate-location")
@@ -187,67 +278,3 @@ def get_safety_map():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
-@app.get("/init-db")
-async def initialize_database():
-    """Create required spatial tables, add thana column, and populate Chittagong risk zones."""
-    create_table_sql = """
-    CREATE EXTENSION IF NOT EXISTS postgis;
-    
-    CREATE TABLE IF NOT EXISTS ctg_risk_zones (
-        id SERIAL PRIMARY KEY,
-        zone_name VARCHAR(100) NOT NULL,
-        thana VARCHAR(100) DEFAULT 'General',
-        risk_level VARCHAR(20) NOT NULL,
-        base_risk_score FLOAT DEFAULT 0.5,
-        location GEOMETRY(Point, 4326),
-        radius_meters FLOAT DEFAULT 500.0,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Add the thana column if the table already existed without it
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
-
-    CREATE TABLE IF NOT EXISTS incidents (
-        id SERIAL PRIMARY KEY,
-        incident_type VARCHAR(50) NOT NULL,
-        description TEXT,
-        severity VARCHAR(20) DEFAULT 'medium',
-        location GEOMETRY(Point, 4326),
-        latitude FLOAT,
-        longitude FLOAT,
-        status VARCHAR(20) DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Assign correct Chittagong police jurisdictions (Thana)
-    UPDATE ctg_risk_zones SET thana = 'Khulshi' WHERE zone_name = 'GEC Circle';
-    UPDATE ctg_risk_zones SET thana = 'Double Mooring' WHERE zone_name = 'Agrabad Commercial Area';
-    UPDATE ctg_risk_zones SET thana = 'Panchlaish' WHERE zone_name = '2 No Gate';
-    UPDATE ctg_risk_zones SET thana = 'Chawkbazar' WHERE zone_name = 'Chawkbazar';
-
-    -- Insert records if table is completely empty
-    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'GEC Circle', 'Khulshi', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'MEDIUM', 0.55, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, pickpocket risk during peak hours'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT '2 No Gate', 'Panchlaish', 'HIGH', 0.78, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, risk_level, base_risk_score, location, radius_meters, description)
-    SELECT 'Chawkbazar', 'Chawkbazar', 'MEDIUM', 0.60, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and market gathering point'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
-    """
-    
-    if hasattr(db_service, 'pool') and db_service.pool:
-        async with db_service.pool.acquire() as conn:
-            await conn.execute(create_table_sql)
-        return {"status": "success", "message": "Database schema updated with thana column successfully!"}
-    else:
-        return {"status": "error", "message": "Database connection pool not ready"}
