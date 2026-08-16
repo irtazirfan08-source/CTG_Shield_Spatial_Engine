@@ -34,9 +34,125 @@ db_service = SpatialSafetyService(
 )
 sos_dispatcher = ProximitySOSDispatcher()
 
+
+async def run_db_migrations():
+    """Auto-migrate tables and populate spatial boundary polygons on startup."""
+    migration_sql = """
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    
+    CREATE TABLE IF NOT EXISTS ctg_risk_zones (
+        id SERIAL PRIMARY KEY,
+        zone_name VARCHAR(100) NOT NULL,
+        thana VARCHAR(100) DEFAULT 'General',
+        dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert',
+        risk_level VARCHAR(20) NOT NULL,
+        base_risk_score FLOAT DEFAULT 0.5,
+        peak_start_hour INT DEFAULT 18,
+        peak_end_hour INT DEFAULT 23,
+        location GEOMETRY(Point, 4326),
+        boundary GEOMETRY(Geometry, 4326),
+        radius_meters FLOAT DEFAULT 500.0,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Ensure all required columns exist
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert';
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS base_risk_score FLOAT DEFAULT 0.5;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_start_hour INT DEFAULT 18;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_end_hour INT DEFAULT 23;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS radius_meters FLOAT DEFAULT 500.0;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS location GEOMETRY(Point, 4326);
+    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS boundary GEOMETRY(Geometry, 4326);
+
+    CREATE TABLE IF NOT EXISTS incidents (
+        id SERIAL PRIMARY KEY,
+        incident_type VARCHAR(50) NOT NULL,
+        description TEXT,
+        severity VARCHAR(20) DEFAULT 'medium',
+        location GEOMETRY(Point, 4326),
+        latitude FLOAT,
+        longitude FLOAT,
+        reporter_id VARCHAR(100),
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS reporter_id VARCHAR(100);
+
+    -- Update and populate spatial boundary polygons and zone properties
+    UPDATE ctg_risk_zones SET 
+        thana = 'Khulshi', 
+        dominant_crime_type = 'Mugging & Snatching',
+        peak_start_hour = 19,
+        peak_end_hour = 23,
+        base_risk_score = 0.85,
+        radius_meters = 600.0,
+        location = ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326)::geography, 600.0)::geometry
+    WHERE zone_name = 'GEC Circle';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Double Mooring', 
+        dominant_crime_type = 'Pickpocketing & Theft',
+        peak_start_hour = 17,
+        peak_end_hour = 21,
+        base_risk_score = 0.55,
+        radius_meters = 800.0,
+        location = ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326)::geography, 800.0)::geometry
+    WHERE zone_name = 'Agrabad Commercial Area';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Panchlaish', 
+        dominant_crime_type = 'Evening Snatching & Harassment',
+        peak_start_hour = 20,
+        peak_end_hour = 24,
+        base_risk_score = 0.78,
+        radius_meters = 500.0,
+        location = ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326)::geography, 500.0)::geometry
+    WHERE zone_name = '2 No Gate';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Chawkbazar', 
+        dominant_crime_type = 'Overcrowding & Harassment',
+        peak_start_hour = 16,
+        peak_end_hour = 22,
+        base_risk_score = 0.60,
+        radius_meters = 600.0,
+        location = ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326)::geography, 600.0)::geometry
+    WHERE zone_name = 'Chawkbazar';
+
+    -- Insert seed spatial hotspots if table is empty
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
+    SELECT 'GEC Circle', 'Khulshi', 'Mugging & Snatching', 'HIGH', 0.85, 19, 23, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326)::geography, 600.0)::geometry, 600.0, 'Heavy congestion, evening snatching hotspot'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
+    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'Pickpocketing & Theft', 'MEDIUM', 0.55, 17, 21, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326)::geography, 800.0)::geometry, 800.0, 'Financial district, peak-hour theft risk'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
+    SELECT '2 No Gate', 'Panchlaish', 'Evening Snatching & Harassment', 'HIGH', 0.78, 20, 24, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326)::geography, 500.0)::geometry, 500.0, 'Dense intersection and high vehicle transit'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
+
+    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
+    SELECT 'Chawkbazar', 'Chawkbazar', 'Overcrowding & Harassment', 'MEDIUM', 0.60, 16, 22, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326)::geography, 600.0)::geometry, 600.0, 'Student and commercial market area'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
+    """
+    if hasattr(db_service, 'pool') and db_service.pool:
+        async with db_service.pool.acquire() as conn:
+            await conn.execute(migration_sql)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db_service.connect()
+    await run_db_migrations()
     yield
     await db_service.close()
 
@@ -91,107 +207,9 @@ def root():
 
 @app.get("/init-db")
 async def initialize_database():
-    """Create and migrate required spatial tables with all expected columns."""
-    create_table_sql = """
-    CREATE EXTENSION IF NOT EXISTS postgis;
-    
-    CREATE TABLE IF NOT EXISTS ctg_risk_zones (
-        id SERIAL PRIMARY KEY,
-        zone_name VARCHAR(100) NOT NULL,
-        thana VARCHAR(100) DEFAULT 'General',
-        dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert',
-        risk_level VARCHAR(20) NOT NULL,
-        base_risk_score FLOAT DEFAULT 0.5,
-        peak_start_hour INT DEFAULT 18,
-        peak_end_hour INT DEFAULT 23,
-        location GEOMETRY(Point, 4326),
-        radius_meters FLOAT DEFAULT 500.0,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Ensure all required columns exist in ctg_risk_zones
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert';
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS base_risk_score FLOAT DEFAULT 0.5;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_start_hour INT DEFAULT 18;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_end_hour INT DEFAULT 23;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS radius_meters FLOAT DEFAULT 500.0;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS description TEXT;
-
-    CREATE TABLE IF NOT EXISTS incidents (
-        id SERIAL PRIMARY KEY,
-        incident_type VARCHAR(50) NOT NULL,
-        description TEXT,
-        severity VARCHAR(20) DEFAULT 'medium',
-        location GEOMETRY(Point, 4326),
-        latitude FLOAT,
-        longitude FLOAT,
-        reporter_id VARCHAR(100),
-        status VARCHAR(20) DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Ensure reporter_id column exists in incidents
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS reporter_id VARCHAR(100);
-
-    -- Update existing records with crime types, thana, and peak hours
-    UPDATE ctg_risk_zones SET 
-        thana = 'Khulshi', 
-        dominant_crime_type = 'Mugging & Snatching',
-        peak_start_hour = 19,
-        peak_end_hour = 23,
-        base_risk_score = 0.85
-    WHERE zone_name = 'GEC Circle';
-
-    UPDATE ctg_risk_zones SET 
-        thana = 'Double Mooring', 
-        dominant_crime_type = 'Pickpocketing & Theft',
-        peak_start_hour = 17,
-        peak_end_hour = 21,
-        base_risk_score = 0.55
-    WHERE zone_name = 'Agrabad Commercial Area';
-
-    UPDATE ctg_risk_zones SET 
-        thana = 'Panchlaish', 
-        dominant_crime_type = 'Evening Snatching & Harassment',
-        peak_start_hour = 20,
-        peak_end_hour = 24,
-        base_risk_score = 0.78
-    WHERE zone_name = '2 No Gate';
-
-    UPDATE ctg_risk_zones SET 
-        thana = 'Chawkbazar', 
-        dominant_crime_type = 'Overcrowding & Harassment',
-        peak_start_hour = 16,
-        peak_end_hour = 22,
-        base_risk_score = 0.60
-    WHERE zone_name = 'Chawkbazar';
-
-    -- Insert seed spatial hotspots if table is empty
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, radius_meters, description)
-    SELECT 'GEC Circle', 'Khulshi', 'Mugging & Snatching', 'HIGH', 0.85, 19, 23, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, radius_meters, description)
-    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'Pickpocketing & Theft', 'MEDIUM', 0.55, 17, 21, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, peak-hour theft risk'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, radius_meters, description)
-    SELECT '2 No Gate', 'Panchlaish', 'Evening Snatching & Harassment', 'HIGH', 0.78, 20, 24, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, radius_meters, description)
-    SELECT 'Chawkbazar', 'Chawkbazar', 'Overcrowding & Harassment', 'MEDIUM', 0.60, 16, 22, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and commercial market area'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
-    """
-    
-    if hasattr(db_service, 'pool') and db_service.pool:
-        async with db_service.pool.acquire() as conn:
-            await conn.execute(create_table_sql)
-        return {"status": "success", "message": "Database schema updated with all columns successfully!"}
-    else:
-        return {"status": "error", "message": "Database connection pool not ready"}
+    """Manual trigger to re-run database migrations."""
+    await run_db_migrations()
+    return {"status": "success", "message": "Database schema updated with boundary polygons successfully!"}
 
 
 @app.get("/api/v1/safety/evaluate-location")
@@ -230,7 +248,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest):
     Triggers instant SOS broadcast to all active nearby users within the radius.
     """
     try:
-        # 1. Log incident automatically into database
         await db_service.log_incident(
             incident_type="ASSAULT",
             description=f"EMERGENCY SOS Triggered by {payload.user_name} ({payload.emergency_type})",
@@ -239,7 +256,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest):
             reporter_id=None
         )
 
-        # 2. Broadcast alarm payload to all users within radius
         broadcast_result = await sos_dispatcher.broadcast_emergency_alarm(
             victim_user_id=payload.user_id,
             victim_name=payload.user_name,
