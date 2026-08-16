@@ -187,7 +187,8 @@ def get_safety_map():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-    @app.get("/init-db")
+
+@app.get("/init-db")
 async def initialize_database():
     """Create required spatial tables and populate initial Chittagong risk zones."""
     create_table_sql = """
@@ -216,7 +217,6 @@ async def initialize_database():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- Insert seed spatial hotspots around Chittagong if table is empty
     INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
     SELECT 'GEC Circle', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
     WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
