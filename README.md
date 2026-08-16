@@ -20,3 +20,7 @@ An asynchronous geospatial crime-zone intelligence and real-time proximity panic
 - `GET /api/v1/safety/evaluate-location` — Evaluates real-time danger scores based on user GPS and time of day.
 - `POST /api/v1/incidents/report` — Submits crowdsourced incidents tagged with PostGIS Point geometry.
 - `POST /api/v1/sos/trigger` — Broadcasts panic alerts to active responders within radius.
+- ## 📱 Mobile Application (Android)
+Download the latest standalone APK build to test on any Android device:
+
+[![Download Android APK](https://img.shields.io/badge/Download-APK%20(v1.0.0)-green?logo=android&logoColor=white)](https://github.com/irtazirfan08-source/CTG_Shield_Spatial_Engine/releases/latest)
