@@ -3,6 +3,7 @@ CTG Shield - FastAPI Gateway with PostGIS Spatial Engine, Heatmap & Proximity SO
 """
 
 import sys
+import os
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -17,9 +18,21 @@ from sos_dispatcher import ProximitySOSDispatcher
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-db_service = SpatialSafetyService(db_user="postgres", db_pass="ctg_secure_pass_2026", db_name="ctg_safety_db")
-sos_dispatcher = ProximitySOSDispatcher()
+# Database configuration for local and cloud (Render)
+DB_USER = os.getenv("DB_USER", "ctg_user")
+DB_PASS = os.getenv("DB_PASS", "nY7PGhRreB0e8WiYkWbrMdrGaLevCDOF")
+DB_NAME = os.getenv("DB_NAME", "ctg_shield")
+DB_HOST = os.getenv("DB_HOST", "dpg-da0k1ss9v7es739i6690-a")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
+db_service = SpatialSafetyService(
+    db_user=DB_USER,
+    db_pass=DB_PASS,
+    db_name=DB_NAME,
+    db_host=DB_HOST,
+    db_port=DB_PORT
+)
+sos_dispatcher = ProximitySOSDispatcher()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
