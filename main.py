@@ -1,7 +1,7 @@
 """
 CTG Shield - FastAPI Gateway with PostGIS Spatial Engine, Heatmap & Proximity SOS
 """
-
+from fastapi.middleware.cors import CORSMiddleware
 import sys
 import os
 import asyncio
@@ -47,7 +47,13 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Schemas ---
 
