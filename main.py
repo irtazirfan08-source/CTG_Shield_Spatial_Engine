@@ -187,3 +187,56 @@ def get_safety_map():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    @app.get("/init-db")
+async def initialize_database():
+    """Create required spatial tables and populate initial Chittagong risk zones."""
+    create_table_sql = """
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    
+    CREATE TABLE IF NOT EXISTS ctg_risk_zones (
+        id SERIAL PRIMARY KEY,
+        zone_name VARCHAR(100) NOT NULL,
+        risk_level VARCHAR(20) NOT NULL,
+        base_risk_score FLOAT DEFAULT 0.5,
+        location GEOMETRY(Point, 4326),
+        radius_meters FLOAT DEFAULT 500.0,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS incidents (
+        id SERIAL PRIMARY KEY,
+        incident_type VARCHAR(50) NOT NULL,
+        description TEXT,
+        severity VARCHAR(20) DEFAULT 'medium',
+        location GEOMETRY(Point, 4326),
+        latitude FLOAT,
+        longitude FLOAT,
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Insert seed spatial hotspots around Chittagong if table is empty
+    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'GEC Circle', 'HIGH', 0.85, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), 600, 'Heavy congestion, evening snatching hotspot'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
+
+    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Agrabad Commercial Area', 'MEDIUM', 0.55, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), 800, 'Financial district, pickpocket risk during peak hours'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
+
+    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT '2 No Gate', 'HIGH', 0.78, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), 500, 'Dense intersection and high vehicle transit'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
+
+    INSERT INTO ctg_risk_zones (zone_name, risk_level, base_risk_score, location, radius_meters, description)
+    SELECT 'Chawkbazar', 'MEDIUM', 0.60, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), 600, 'Student and market gathering point'
+    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
+    """
+    
+    if hasattr(db_service, 'pool') and db_service.pool:
+        async with db_service.pool.acquire() as conn:
+            await conn.execute(create_table_sql)
+        return {"status": "success", "message": "Database tables and spatial risk zones created successfully!"}
+    else:
+        return {"status": "error", "message": "Database connection pool not ready"}
