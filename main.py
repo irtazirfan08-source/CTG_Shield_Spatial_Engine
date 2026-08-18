@@ -5,7 +5,7 @@ import sys
 import os
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -56,7 +56,6 @@ async def run_db_migrations():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- Ensure all required columns exist
     ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
     ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert';
     ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS base_risk_score FLOAT DEFAULT 0.5;
@@ -82,7 +81,6 @@ async def run_db_migrations():
 
     ALTER TABLE incidents ADD COLUMN IF NOT EXISTS reporter_id VARCHAR(100);
 
-    -- Update and populate spatial boundary polygons and zone properties
     UPDATE ctg_risk_zones SET 
         thana = 'Khulshi', 
         dominant_crime_type = 'Mugging & Snatching',
@@ -126,23 +124,6 @@ async def run_db_migrations():
         location = ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326),
         boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326)::geography, 600.0)::geometry
     WHERE zone_name = 'Chawkbazar';
-
-    -- Insert seed spatial hotspots if table is empty
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
-    SELECT 'GEC Circle', 'Khulshi', 'Mugging & Snatching', 'HIGH', 0.85, 19, 23, ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326)::geography, 600.0)::geometry, 600.0, 'Heavy congestion, evening snatching hotspot'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'GEC Circle');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
-    SELECT 'Agrabad Commercial Area', 'Double Mooring', 'Pickpocketing & Theft', 'MEDIUM', 0.55, 17, 21, ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326)::geography, 800.0)::geometry, 800.0, 'Financial district, peak-hour theft risk'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Agrabad Commercial Area');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
-    SELECT '2 No Gate', 'Panchlaish', 'Evening Snatching & Harassment', 'HIGH', 0.78, 20, 24, ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326)::geography, 500.0)::geometry, 500.0, 'Dense intersection and high vehicle transit'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = '2 No Gate');
-
-    INSERT INTO ctg_risk_zones (zone_name, thana, dominant_crime_type, risk_level, base_risk_score, peak_start_hour, peak_end_hour, location, boundary, radius_meters, description)
-    SELECT 'Chawkbazar', 'Chawkbazar', 'Overcrowding & Harassment', 'MEDIUM', 0.60, 16, 22, ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326), ST_Buffer(ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326)::geography, 600.0)::geometry, 600.0, 'Student and commercial market area'
-    WHERE NOT EXISTS (SELECT 1 FROM ctg_risk_zones WHERE zone_name = 'Chawkbazar');
     """
     if hasattr(db_service, 'pool') and db_service.pool:
         async with db_service.pool.acquire() as conn:
@@ -164,7 +145,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for Flutter Web integration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -209,7 +189,45 @@ def root():
 async def initialize_database():
     """Manual trigger to re-run database migrations."""
     await run_db_migrations()
-    return {"status": "success", "message": "Database schema updated with boundary polygons successfully!"}
+    return {"status": "success", "message": "Database schema updated successfully!"}
+
+
+@app.get("/api/v1/incidents/recent")
+async def get_recent_incidents(limit: int = 50):
+    """Retrieve recent reported incidents with coordinates from PostGIS."""
+    query = """
+    SELECT 
+        id, 
+        incident_type, 
+        description, 
+        severity, 
+        COALESCE(latitude, ST_Y(location::geometry)) as latitude, 
+        COALESCE(longitude, ST_X(location::geometry)) as longitude, 
+        created_at 
+    FROM incidents 
+    WHERE status = 'active'
+    ORDER BY created_at DESC 
+    LIMIT $1;
+    """
+    try:
+        if hasattr(db_service, 'pool') and db_service.pool:
+            async with db_service.pool.acquire() as conn:
+                rows = await conn.fetch(query, limit)
+                return [
+                    {
+                        "id": r["id"],
+                        "incident_type": r["incident_type"],
+                        "description": r["description"],
+                        "severity": r["severity"],
+                        "latitude": float(r["latitude"]) if r["latitude"] is not None else 0.0,
+                        "longitude": float(r["longitude"]) if r["longitude"] is not None else 0.0,
+                        "created_at": r["created_at"].isoformat() if r["created_at"] else None
+                    }
+                    for r in rows if r["latitude"] is not None and r["longitude"] is not None
+                ]
+        return []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/safety/evaluate-location")
@@ -244,9 +262,6 @@ async def report_incident(payload: IncidentReportRequest):
 
 @app.post("/api/v1/sos/trigger")
 async def trigger_emergency_sos(payload: SOSTriggerRequest):
-    """
-    Triggers instant SOS broadcast to all active nearby users within the radius.
-    """
     try:
         await db_service.log_incident(
             incident_type="ASSAULT",
@@ -275,11 +290,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest):
 
 @app.websocket("/ws/safety-stream/{user_id}")
 async def websocket_safety_stream(websocket: WebSocket, user_id: str):
-    """
-    Two-way real-time socket connection:
-    - Client sends periodic GPS pings: {"lon": 91.8220, "lat": 22.3600}
-    - Server pushes instant proximity sirens if an SOS occurs nearby
-    """
     await sos_dispatcher.connect(user_id, websocket)
     try:
         while True:
