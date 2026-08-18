@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 import uvicorn
+import asyncpg
 
 from spatial_service import SpatialSafetyService
 from sos_dispatcher import ProximitySOSDispatcher
@@ -18,7 +19,6 @@ from sos_dispatcher import ProximitySOSDispatcher
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-# Database configuration for local and cloud (Render)
 DB_USER = os.getenv("DB_USER", "ctg_user")
 DB_PASS = os.getenv("DB_PASS", "nY7PGhRreB0e8WiYkWbrMdrGaLevCDOF")
 DB_NAME = os.getenv("DB_NAME", "ctg_shield")
@@ -34,20 +34,13 @@ db_service = SpatialSafetyService(
 )
 sos_dispatcher = ProximitySOSDispatcher()
 
-
-def get_db_pool():
-    """Dynamically resolve connection pool from SpatialSafetyService."""
-    for attr in ['pool', '_pool', 'db_pool', 'connection_pool']:
-        p = getattr(db_service, attr, None)
-        if p is not None:
-            return p
-    return None
+global_pool: Optional[asyncpg.Pool] = None
 
 
 async def run_db_migrations():
-    """Auto-migrate tables and ensure all spatial and incident columns exist."""
-    pool = get_db_pool()
-    if not pool:
+    """Auto-migrate tables and ensure all spatial tables exist."""
+    global global_pool
+    if not global_pool:
         return
 
     migration_sql = """
@@ -69,52 +62,82 @@ async def run_db_migrations():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS thana VARCHAR(100) DEFAULT 'General';
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS dominant_crime_type VARCHAR(100) DEFAULT 'General Safety Alert';
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS base_risk_score FLOAT DEFAULT 0.5;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_start_hour INT DEFAULT 18;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS peak_end_hour INT DEFAULT 23;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS radius_meters FLOAT DEFAULT 500.0;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS description TEXT;
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS location GEOMETRY(Point, 4326);
-    ALTER TABLE ctg_risk_zones ADD COLUMN IF NOT EXISTS boundary GEOMETRY(Geometry, 4326);
-
     CREATE TABLE IF NOT EXISTS incidents (
         id SERIAL PRIMARY KEY,
         incident_type VARCHAR(50) NOT NULL,
         description TEXT,
         severity VARCHAR(20) DEFAULT 'medium',
         location GEOMETRY(Point, 4326),
-        latitude FLOAT,
-        longitude FLOAT,
         reporter_id VARCHAR(100),
         status VARCHAR(20) DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS latitude FLOAT;
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS longitude FLOAT;
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS reporter_id VARCHAR(100);
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severity VARCHAR(20) DEFAULT 'medium';
-    ALTER TABLE incidents ADD COLUMN IF NOT EXISTS location GEOMETRY(Point, 4326);
+    UPDATE ctg_risk_zones SET 
+        thana = 'Khulshi', 
+        dominant_crime_type = 'Mugging & Snatching',
+        peak_start_hour = 19,
+        peak_end_hour = 23,
+        base_risk_score = 0.85,
+        radius_meters = 600.0,
+        location = ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8215, 22.3569), 4326)::geography, 600.0)::geometry
+    WHERE zone_name = 'GEC Circle';
 
-    UPDATE incidents 
-    SET latitude = ST_Y(location::geometry), 
-        longitude = ST_X(location::geometry) 
-    WHERE (latitude IS NULL OR longitude IS NULL) AND location IS NOT NULL;
+    UPDATE ctg_risk_zones SET 
+        thana = 'Double Mooring', 
+        dominant_crime_type = 'Pickpocketing & Theft',
+        peak_start_hour = 17,
+        peak_end_hour = 21,
+        base_risk_score = 0.55,
+        radius_meters = 800.0,
+        location = ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8122, 22.3275), 4326)::geography, 800.0)::geometry
+    WHERE zone_name = 'Agrabad Commercial Area';
 
-    UPDATE incidents SET status = 'active' WHERE status IS NULL;
+    UPDATE ctg_risk_zones SET 
+        thana = 'Panchlaish', 
+        dominant_crime_type = 'Evening Snatching & Harassment',
+        peak_start_hour = 20,
+        peak_end_hour = 24,
+        base_risk_score = 0.78,
+        radius_meters = 500.0,
+        location = ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8229, 22.3685), 4326)::geography, 500.0)::geometry
+    WHERE zone_name = '2 No Gate';
+
+    UPDATE ctg_risk_zones SET 
+        thana = 'Chawkbazar', 
+        dominant_crime_type = 'Overcrowding & Harassment',
+        peak_start_hour = 16,
+        peak_end_hour = 22,
+        base_risk_score = 0.60,
+        radius_meters = 600.0,
+        location = ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326),
+        boundary = ST_Buffer(ST_SetSRID(ST_MakePoint(91.8385, 22.3578), 4326)::geography, 600.0)::geometry
+    WHERE zone_name = 'Chawkbazar';
     """
-    async with pool.acquire() as conn:
+    async with global_pool.acquire() as conn:
         await conn.execute(migration_sql)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global global_pool
+    global_pool = await asyncpg.create_pool(
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        host=DB_HOST,
+        port=DB_PORT,
+        min_size=2,
+        max_size=10
+    )
     await db_service.connect()
     await run_db_migrations()
     yield
+    if global_pool:
+        await global_pool.close()
     await db_service.close()
 
 
@@ -167,48 +190,48 @@ def root():
 
 @app.get("/init-db")
 async def initialize_database():
-    """Manual trigger to re-run database migrations."""
     await run_db_migrations()
     return {"status": "success", "message": "Database schema updated successfully!"}
 
 
 @app.get("/api/v1/incidents/recent")
 async def get_recent_incidents(limit: int = 50):
-    """Retrieve recent reported incidents with coordinates from PostGIS."""
-    pool = get_db_pool()
-    if not pool:
-        raise HTTPException(status_code=500, detail="Database connection pool unavailable.")
+    """Retrieve all reported incidents directly with PostGIS coordinates."""
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
 
     query = """
     SELECT 
         id, 
         incident_type, 
         description, 
-        severity, 
-        COALESCE(latitude, ST_Y(location::geometry), 0.0) as latitude, 
-        COALESCE(longitude, ST_X(location::geometry), 0.0) as longitude, 
+        COALESCE(severity, 'medium') as severity, 
+        ST_Y(location::geometry) as latitude, 
+        ST_X(location::geometry) as longitude, 
         created_at 
     FROM incidents 
+    WHERE location IS NOT NULL
     ORDER BY id DESC 
     LIMIT $1;
     """
     try:
-        async with pool.acquire() as conn:
+        async with global_pool.acquire() as conn:
             rows = await conn.fetch(query, limit)
             return [
                 {
                     "id": r["id"],
-                    "incident_type": r["incident_type"] or "INCIDENT",
+                    "incident_type": r["incident_type"],
                     "description": r["description"] or "",
-                    "severity": r["severity"] or "medium",
-                    "latitude": float(r["latitude"]),
-                    "longitude": float(r["longitude"]),
+                    "severity": r["severity"],
+                    "latitude": float(r["latitude"]) if r["latitude"] is not None else 0.0,
+                    "longitude": float(r["longitude"]) if r["longitude"] is not None else 0.0,
                     "created_at": r["created_at"].isoformat() if r["created_at"] else None
                 }
                 for r in rows
             ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Database query error: {str(e)}")
 
 
 @app.get("/api/v1/safety/evaluate-location")
@@ -225,55 +248,50 @@ async def evaluate_user_location(
 
 @app.post("/api/v1/incidents/report")
 async def report_incident(payload: IncidentReportRequest):
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
     try:
-        pool = get_db_pool()
-        if pool:
-            insert_sql = """
-            INSERT INTO incidents (incident_type, description, location, latitude, longitude, status)
-            VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $4, $3, 'active')
-            RETURNING id;
-            """
-            async with pool.acquire() as conn:
-                report_id = await conn.fetchval(
-                    insert_sql,
-                    payload.incident_type.upper(),
-                    payload.description,
-                    payload.longitude,
-                    payload.latitude
-                )
-        else:
-            report_id = await db_service.log_incident(
-                incident_type=payload.incident_type.upper(),
-                description=payload.description,
-                longitude=payload.longitude,
-                latitude=payload.latitude
+        insert_sql = """
+        INSERT INTO incidents (incident_type, description, location, status)
+        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), 'active')
+        RETURNING id;
+        """
+        async with global_pool.acquire() as conn:
+            report_id = await conn.fetchval(
+                insert_sql,
+                payload.incident_type.upper(),
+                payload.description,
+                payload.longitude,
+                payload.latitude
             )
-        return {
-            "status": "SUCCESS",
-            "message": "Incident reported and recorded in spatial ledger.",
-            "incident_id": report_id
-        }
+            return {
+                "status": "SUCCESS",
+                "message": "Incident reported and recorded in spatial ledger.",
+                "incident_id": report_id
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/sos/trigger")
 async def trigger_emergency_sos(payload: SOSTriggerRequest):
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
     try:
-        pool = get_db_pool()
-        if pool:
-            insert_sql = """
-            INSERT INTO incidents (incident_type, description, location, latitude, longitude, status, severity)
-            VALUES ('ASSAULT', $1, ST_SetSRID(ST_MakePoint($2, $3), 4326), $3, $2, 'active', 'high')
-            RETURNING id;
-            """
-            async with pool.acquire() as conn:
-                await conn.fetchval(
-                    insert_sql,
-                    f"EMERGENCY SOS Triggered by {payload.user_name} ({payload.emergency_type})",
-                    payload.longitude,
-                    payload.latitude
-                )
+        insert_sql = """
+        INSERT INTO incidents (incident_type, description, location, status, severity)
+        VALUES ('ASSAULT', $1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'active', 'high')
+        RETURNING id;
+        """
+        async with global_pool.acquire() as conn:
+            await conn.fetchval(
+                insert_sql,
+                f"EMERGENCY SOS Triggered by {payload.user_name} ({payload.emergency_type})",
+                payload.longitude,
+                payload.latitude
+            )
 
         broadcast_result = await sos_dispatcher.broadcast_emergency_alarm(
             victim_user_id=payload.user_id,
@@ -290,8 +308,6 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- Real-Time WebSocket Channel ---
-
 @app.websocket("/ws/safety-stream/{user_id}")
 async def websocket_safety_stream(websocket: WebSocket, user_id: str):
     await sos_dispatcher.connect(user_id, websocket)
@@ -307,8 +323,6 @@ async def websocket_safety_stream(websocket: WebSocket, user_id: str):
     except WebSocketDisconnect:
         sos_dispatcher.disconnect(user_id)
 
-
-# --- Visual Dashboards ---
 
 @app.get("/simulator", response_class=HTMLResponse)
 def get_sos_simulator():
