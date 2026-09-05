@@ -6,15 +6,17 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, List
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 import uvicorn
 import asyncpg
 
 from spatial_service import SpatialSafetyService
 from sos_dispatcher import ProximitySOSDispatcher
+from auth_utils import hash_password, verify_password, create_access_token, get_current_user
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -22,7 +24,7 @@ if sys.platform == "win32":
 DB_USER = os.getenv("DB_USER", "ctg_user")
 DB_PASS = os.getenv("DB_PASS", "nY7PGhRreB0e8WiYkWbrMdrGaLevCDOF")
 DB_NAME = os.getenv("DB_NAME", "ctg_shield")
-DB_HOST = os.getenv("DB_HOST", "dpg-da0k1ss9v7es739i6690-a")
+DB_HOST = os.getenv("DB_HOST", "dpg-da0k1ss9v7es739i6690-a.singapore-postgres.render.com")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
 db_service = SpatialSafetyService(
@@ -38,13 +40,22 @@ global_pool: Optional[asyncpg.Pool] = None
 
 
 async def run_db_migrations():
-    """Auto-migrate tables and ensure all spatial tables exist."""
+    """Auto-migrate tables and ensure all spatial and auth tables exist."""
     global global_pool
     if not global_pool:
         return
 
     migration_sql = """
     CREATE EXTENSION IF NOT EXISTS postgis;
+
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        full_name VARCHAR(100) NOT NULL,
+        phone_number VARCHAR(20) UNIQUE NOT NULL,
+        emergency_contact VARCHAR(20) NOT NULL,
+        hashed_password TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
     
     CREATE TABLE IF NOT EXISTS ctg_risk_zones (
         id SERIAL PRIMARY KEY,
@@ -158,6 +169,18 @@ app.add_middleware(
 
 # --- Schemas ---
 
+class UserRegisterRequest(BaseModel):
+    full_name: str = Field(..., description="Full Name of user", example="Irtaz Irfan")
+    phone_number: str = Field(..., description="Unique mobile number", example="+8801700000000")
+    emergency_contact: str = Field(..., description="Primary emergency guardian number", example="+8801800000000")
+    password: str = Field(..., min_length=6, description="Password (at least 6 characters)", example="secret123")
+
+
+class UserLoginRequest(BaseModel):
+    phone_number: str = Field(..., description="Registered mobile number", example="+8801700000000")
+    password: str = Field(..., description="Password", example="secret123")
+
+
 class IncidentReportRequest(BaseModel):
     incident_type: str = Field(..., description="MUGGING, ROBBERY, HARASSMENT, ASSAULT, or HAZARD")
     description: str = Field(..., description="Brief details about what happened")
@@ -169,10 +192,121 @@ class SOSTriggerRequest(BaseModel):
     user_id: str = Field(..., description="Unique User ID of victim")
     user_name: str = Field(..., description="Victim's name")
     user_phone: str = Field(..., description="Victim's contact phone")
+    emergency_contact: Optional[str] = Field(default=None, description="Guardian emergency phone")
     longitude: float = Field(..., description="Victim's current GPS Longitude")
     latitude: float = Field(..., description="Victim's current GPS Latitude")
     emergency_type: str = Field(default="PHYSICAL_ATTACK", description="ATTACK, MUGGING, ACCIDENT, HARASSMENT")
     broadcast_radius_meters: float = Field(default=2500.0, description="Broadcast radius in meters")
+
+
+# --- Authentication Endpoints ---
+
+@app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED)
+async def register_user(payload: UserRegisterRequest):
+    """Registers a new citizen with their contact and emergency numbers."""
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
+
+    async with global_pool.acquire() as conn:
+        existing_user = await conn.fetchval(
+            "SELECT id FROM users WHERE phone_number = $1;",
+            payload.phone_number
+        )
+        if existing_user:
+            raise HTTPException(status_code=400, detail="This phone number is already registered.")
+
+        hashed = hash_password(payload.password)
+        insert_sql = """
+        INSERT INTO users (full_name, phone_number, emergency_contact, hashed_password)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, full_name, phone_number, emergency_contact;
+        """
+        user_row = await conn.fetchrow(
+            insert_sql,
+            payload.full_name,
+            payload.phone_number,
+            payload.emergency_contact,
+            hashed
+        )
+
+        access_token = create_access_token(data={"sub": payload.phone_number})
+        return {
+            "status": "SUCCESS",
+            "message": "User registered successfully",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(user_row["id"]),
+                "full_name": user_row["full_name"],
+                "phone_number": user_row["phone_number"],
+                "emergency_contact": user_row["emergency_contact"]
+            }
+        }
+
+
+@app.post("/api/v1/auth/login")
+async def login_user(payload: UserLoginRequest):
+    """Authenticates mobile client credentials and returns a JWT access token."""
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
+
+    async with global_pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, full_name, phone_number, emergency_contact, hashed_password FROM users WHERE phone_number = $1;",
+            payload.phone_number
+        )
+
+        if not user_row or not verify_password(payload.password, user_row["hashed_password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect phone number or password"
+            )
+
+        access_token = create_access_token(data={"sub": user_row["phone_number"]})
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(user_row["id"]),
+                "full_name": user_row["full_name"],
+                "phone_number": user_row["phone_number"],
+                "emergency_contact": user_row["emergency_contact"]
+            }
+        }
+
+
+@app.post("/api/v1/auth/token")
+async def swagger_token_login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """OAuth2 compatibility route enabling native Authorize testing directly in Swagger docs."""
+    global global_pool
+    if not global_pool:
+        raise HTTPException(status_code=500, detail="Database pool not ready.")
+
+    async with global_pool.acquire() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT id, phone_number, hashed_password FROM users WHERE phone_number = $1;",
+            form_data.username
+        )
+
+        if not user_row or not verify_password(form_data.password, user_row["hashed_password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect phone number or password"
+            )
+
+        access_token = create_access_token(data={"sub": user_row["phone_number"]})
+        return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/api/v1/auth/me")
+async def get_current_user_profile(current_user: dict = Depends(get_current_user)):
+    """Validates the client's cached JWT token and returns their profile on app boot."""
+    return {
+        "status": "AUTHENTICATED",
+        "user": current_user
+    }
 
 
 # --- HTTP Endpoints ---
@@ -281,16 +415,17 @@ async def trigger_emergency_sos(payload: SOSTriggerRequest):
         raise HTTPException(status_code=500, detail="Database pool not ready.")
     try:
         insert_sql = """
-        INSERT INTO incidents (incident_type, description, location, status, severity)
-        VALUES ('ASSAULT', $1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'active', 'high')
+        INSERT INTO incidents (incident_type, description, location, status, severity, reporter_id)
+        VALUES ('ASSAULT', $1, ST_SetSRID(ST_MakePoint($2, $3), 4326), 'active', 'high', $4)
         RETURNING id;
         """
         async with global_pool.acquire() as conn:
             await conn.fetchval(
                 insert_sql,
-                f"EMERGENCY SOS Triggered by {payload.user_name} ({payload.emergency_type})",
+                f"EMERGENCY SOS: {payload.user_name} ({payload.user_phone}) needs help! Guardian: {payload.emergency_contact or 'N/A'}",
                 payload.longitude,
-                payload.latitude
+                payload.latitude,
+                payload.user_id
             )
 
         broadcast_result = await sos_dispatcher.broadcast_emergency_alarm(
