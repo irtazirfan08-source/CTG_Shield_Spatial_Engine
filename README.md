@@ -26,3 +26,5 @@ An asynchronous geospatial crime-zone intelligence and real-time proximity panic
 Download the latest standalone APK build to test on any Android device:
 
 [![Download Android APK](https://img.shields.io/badge/Download-APK%20(v1.0.0)-green?logo=android&logoColor=white)](https://github.com/irtazirfan08-source/CTG_Shield_Spatial_Engine/releases/latest)
+### Ecosystem Components
+* **Client Application**: Cross-platform mobile client handling citizen distress triggers, GPS telemetry, and incident map rendering: [CTG_Shield_Mobile](https://github.com/irtazirfan08-source/CTG_Shield_Mobile)
