@@ -20,6 +20,8 @@ An asynchronous geospatial crime-zone intelligence and real-time proximity panic
 - `GET /api/v1/safety/evaluate-location` — Evaluates real-time danger scores based on user GPS and time of day.
 - `POST /api/v1/incidents/report` — Submits crowdsourced incidents tagged with PostGIS Point geometry.
 - `POST /api/v1/sos/trigger` — Broadcasts panic alerts to active responders within radius.
+- ### Ecosystem Components
+* **Client Application**: Cross-platform mobile client handling citizen distress triggers, GPS telemetry, and incident map rendering: [CTG_Shield_Mobile](https://github.com/irtazirfan08-source/CTG_Shield_Mobile)
 - ## 📱 Mobile Application (Android)
 Download the latest standalone APK build to test on any Android device:
 
